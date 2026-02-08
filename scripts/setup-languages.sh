@@ -178,12 +178,7 @@ install_ruby() {
 install_claude_code() {
     if step_done claude-code; then skip "Claude Code"; return 0; fi
     info "Installing Claude Code..."
-    export NVM_DIR="$HOME/.nvm"
-    set +u
-    # shellcheck source=/dev/null
-    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-    set -u
-    npm install -g @anthropic-ai/claude-code
+    curl -fsSL https://claude.ai/install.sh | bash
     mark_done claude-code
     ok "Claude Code"
 }

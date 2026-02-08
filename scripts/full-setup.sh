@@ -146,6 +146,25 @@ EOF
     tar -C /usr/local -xzf /tmp/go.tar.gz
     rm /tmp/go.tar.gz
 
+    echo "=== Installing GitHub CLI ==="
+
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null
+    chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+    apt-get update
+    apt-get install -y gh
+
+    echo "=== Installing Google Cloud CLI ==="
+
+    curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg \
+        | gpg --batch --yes --dearmor -o /usr/share/keyrings/cloud.google.gpg
+    echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" \
+        | tee /etc/apt/sources.list.d/google-cloud-sdk.list > /dev/null
+    apt-get update
+    apt-get install -y google-cloud-cli
+
     touch "$SYSTEM_SENTINEL"
 fi
 
@@ -187,9 +206,8 @@ export PATH=\$PATH:\$GOPATH/bin
 [[ -d \$HOME/.rbenv/bin ]] && export PATH="\$HOME/.rbenv/bin:\$PATH"
 command -v rbenv >/dev/null && eval "\$(rbenv init -)"
 
-# Claude Code
-alias claude-unsafe='claude --dangerously-skip-permissions'
-claude-dev() { claude --dangerously-skip-permissions "\$@"; }
+# Claude Code — dangerous mode by default (this VM is purpose-built for it)
+claude() { command claude --dangerously-skip-permissions "\$@"; }
 # --- vmclaude-env-end ---
 EOF
     echo "  .bashrc configured"
@@ -337,17 +355,11 @@ set -euo pipefail
 
 SENTINEL_DIR="$ACTUAL_HOME/.vmclaude"
 
-# Source nvm to get npm (nvm needs nounset disabled)
-export NVM_DIR="\$HOME/.nvm"
-set +u
-[ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
-set -u
-
 if [ -f "\$SENTINEL_DIR/claude-code.done" ]; then
     echo "  Claude Code: already installed"
 else
     echo "Installing Claude Code CLI..."
-    npm install -g @anthropic-ai/claude-code
+    curl -fsSL https://claude.ai/install.sh | bash
     touch "\$SENTINEL_DIR/claude-code.done"
 fi
 
@@ -424,6 +436,8 @@ echo "  - nvm + Node.js LTS + pnpm"
 echo "  - rustup + Rust stable"
 echo "  - Go 1.22"
 echo "  - rbenv + Ruby 3.3"
+echo "  - GitHub CLI (gh)"
+echo "  - Google Cloud CLI (gcloud)"
 echo "  - Claude Code CLI"
 echo ""
 echo "IMPORTANT: Log out and back in (or run 'newgrp docker')"
