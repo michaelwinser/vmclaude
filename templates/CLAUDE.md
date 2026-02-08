@@ -5,10 +5,11 @@ This VM is configured for Claude Code development in dangerous mode. Follow thes
 ## Isolation Requirements (MANDATORY)
 
 ### Python
-- **Always use venv**. Create with `python -m venv .venv` before any pip install.
-- Activate with: `source .venv/bin/activate`
-- Never install packages globally except via pipx for CLI tools.
-- Use `pyproject.toml` for project configuration.
+- **Always use poetry** for dependency management and virtual environments.
+- Initialize with: `poetry init` or `poetry new <project-name>`
+- Add dependencies with: `poetry add <package>`
+- Never `pip install` directly — use `poetry add` instead.
+- Use `pyproject.toml` for project configuration (poetry manages this).
 
 ### Node.js
 - Use project-local `node_modules`. Never install project dependencies globally.
@@ -69,7 +70,7 @@ init-project python my-project
 ```
 
 ### Available Templates
-- `python` - Python with pyproject.toml, venv auto-activation
+- `python` - Python with pyproject.toml, poetry
 - `node` - Node/TypeScript with pnpm
 - `go` - Go modules setup
 - `rust` - Cargo-based project
@@ -79,15 +80,15 @@ init-project python my-project
 ## What NOT To Do
 
 ### Never Do These
-- `pip install <package>` without an active venv
+- `pip install <package>` directly — use `poetry add` instead
 - `npm install <package>` globally for project dependencies
 - Install language runtimes globally (use version managers: pyenv, nvm, rbenv)
 - Hardcode paths to system binaries
 - Modify system Python or Node installations
-- Run `sudo pip install` or `sudo npm install`
+- Run `sudo pip install`, `sudo npm install`, or any sudo package installs
 
 ### Instead Do These
-- `python -m venv .venv && source .venv/bin/activate && pip install <package>`
+- `poetry add <package>` (poetry manages the venv automatically)
 - `npm install <package>` (local to project)
 - `pyenv install 3.12` / `nvm install 20` for version management
 - Use `$(which python)` or rely on PATH for binary locations
@@ -97,10 +98,9 @@ init-project python my-project
 ### New Python Project
 ```bash
 mkdir my-project && cd my-project
-python -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-# Create pyproject.toml or requirements.txt
+poetry init
+poetry add <dependencies>
+poetry shell   # or: poetry run <command>
 ```
 
 ### New Node Project

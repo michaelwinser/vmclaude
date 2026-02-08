@@ -1,0 +1,306 @@
+#!/bin/bash
+# vm — CLI wrapper for the vmclaude Lima VM
+#
+# Usage: ./vm <command> [args]
+# Run ./vm help for all commands.
+
+set -euo pipefail
+
+# Resolve the directory this script lives in (follow symlinks)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VM_NAME="claude-dev"
+YAML_FILE="$SCRIPT_DIR/claude-dev.yaml"
+SETUP_SCRIPT="$SCRIPT_DIR/scripts/setup-languages.sh"
+
+# ---------------------------------------------------------------------------
+# Colors
+# ---------------------------------------------------------------------------
+RED=$'\033[0;31m'
+GREEN=$'\033[0;32m'
+YELLOW=$'\033[1;33m'
+BLUE=$'\033[0;34m'
+BOLD=$'\033[1m'
+NC=$'\033[0m'
+
+info()  { printf '%s\n' "${BLUE}==>${NC} $*"; }
+ok()    { printf '%s\n' "${GREEN}==>${NC} $*"; }
+warn()  { printf '%s\n' "${YELLOW}==>${NC} $*"; }
+err()   { printf '%s\n' "${RED}==>${NC} $*" >&2; }
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+vm_exists() {
+    limactl list --json 2>/dev/null | jq -e "select(.name == \"$VM_NAME\")" >/dev/null 2>&1
+}
+
+vm_running() {
+    limactl list --json 2>/dev/null | jq -e "select(.name == \"$VM_NAME\" and .status == \"Running\")" >/dev/null 2>&1
+}
+
+require_exists() {
+    if ! vm_exists; then
+        err "VM '$VM_NAME' does not exist. Run: ./vm create"
+        exit 1
+    fi
+}
+
+require_running() {
+    require_exists
+    if ! vm_running; then
+        err "VM '$VM_NAME' is not running. Run: ./vm start"
+        exit 1
+    fi
+}
+
+setup_complete() {
+    limactl shell "$VM_NAME" -- test -f ~/.vmclaude/setup-complete 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+cmd_create() {
+    if vm_exists; then
+        err "VM '$VM_NAME' already exists."
+        echo "  Run: ./vm destroy   to remove it first"
+        echo "  Run: ./vm start     to start it if stopped"
+        exit 1
+    fi
+    info "Creating VM '$VM_NAME'..."
+    limactl start "$YAML_FILE" --name "$VM_NAME" --tty=false
+    ok "VM created. Running language setup..."
+    echo ""
+    cmd_setup
+}
+
+cmd_setup() {
+    require_running
+    info "Running language setup (interactive)..."
+    limactl shell "$VM_NAME" -- bash -e "$SETUP_SCRIPT"
+}
+
+cmd_shell() {
+    require_running
+    if ! setup_complete; then
+        warn "Language setup not complete. Run: ./vm setup"
+    fi
+    limactl shell "$VM_NAME" "$@"
+}
+
+cmd_start() {
+    require_exists
+    if vm_running; then
+        ok "VM '$VM_NAME' is already running."
+        return
+    fi
+    info "Starting VM '$VM_NAME'..."
+    limactl start "$VM_NAME"
+    ok "VM started."
+}
+
+cmd_stop() {
+    require_running
+    info "Stopping VM '$VM_NAME'..."
+    limactl stop "$VM_NAME"
+    ok "VM stopped."
+}
+
+cmd_restart() {
+    require_exists
+    if vm_running; then
+        cmd_stop
+    fi
+    cmd_start
+}
+
+cmd_status() {
+    if ! vm_exists; then
+        echo "VM '$VM_NAME': not created"
+        return
+    fi
+    limactl list | head -1
+    limactl list | grep "$VM_NAME" || true
+    echo ""
+    if vm_running; then
+        if setup_complete; then
+            ok "Language setup: complete"
+        else
+            warn "Language setup: incomplete — run: ./vm setup"
+        fi
+    fi
+}
+
+cmd_destroy() {
+    if ! vm_exists; then
+        warn "VM '$VM_NAME' does not exist."
+        return
+    fi
+    printf '%s\n' "${RED}This will permanently delete VM '$VM_NAME' and all data inside it.${NC}"
+    read -rp "Are you sure? [y/N] " confirm
+    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        if vm_running; then
+            info "Stopping VM first..."
+            limactl stop "$VM_NAME" || true
+        fi
+        limactl delete "$VM_NAME"
+        ok "VM '$VM_NAME' deleted."
+    else
+        info "Cancelled."
+    fi
+}
+
+cmd_snapshot() {
+    require_exists
+    local subcmd="${1:-}"
+    shift || true
+
+    case "$subcmd" in
+        create)
+            local tag="${1:?Usage: ./vm snapshot create <tag>}"
+            if vm_running; then
+                info "Stopping VM for snapshot..."
+                limactl stop "$VM_NAME"
+            fi
+            limactl snapshot create "$VM_NAME" --tag "$tag"
+            ok "Snapshot '$tag' created."
+            info "Restarting VM..."
+            limactl start "$VM_NAME"
+            ;;
+        list)
+            limactl snapshot list "$VM_NAME"
+            ;;
+        apply)
+            local tag="${1:?Usage: ./vm snapshot apply <tag>}"
+            if vm_running; then
+                info "Stopping VM for snapshot apply..."
+                limactl stop "$VM_NAME"
+            fi
+            limactl snapshot apply "$VM_NAME" --tag "$tag"
+            ok "Snapshot '$tag' applied."
+            info "Starting VM..."
+            limactl start "$VM_NAME"
+            ;;
+        delete)
+            local tag="${1:?Usage: ./vm snapshot delete <tag>}"
+            limactl snapshot delete "$VM_NAME" --tag "$tag"
+            ok "Snapshot '$tag' deleted."
+            ;;
+        *)
+            echo "Usage: ./vm snapshot <create|list|apply|delete> [tag]"
+            exit 1
+            ;;
+    esac
+}
+
+cmd_exec() {
+    require_running
+    if [ $# -eq 0 ]; then
+        err "Usage: ./vm exec <command> [args...]"
+        exit 1
+    fi
+    limactl shell "$VM_NAME" -- "$@"
+}
+
+cmd_logs() {
+    require_running
+    limactl shell "$VM_NAME" -- tail -f /var/log/cloud-init-output.log
+}
+
+cmd_info() {
+    require_exists
+    printf '%s\n' "${BOLD}VM: $VM_NAME${NC}"
+    echo ""
+    limactl list | head -1
+    limactl list | grep "$VM_NAME" || true
+    echo ""
+
+    if vm_running; then
+        printf '%s\n' "${BOLD}System provisioned:${NC}"
+        if limactl shell "$VM_NAME" -- test -f /var/lib/vmclaude-system-provisioned 2>/dev/null; then
+            printf '%s\n' "  ${GREEN}yes${NC}"
+        else
+            printf '%s\n' "  ${YELLOW}no${NC}"
+        fi
+
+        printf '%s\n' "${BOLD}Language setup:${NC}"
+        if setup_complete; then
+            printf '%s\n' "  ${GREEN}complete${NC}"
+        else
+            printf '%s\n' "  ${YELLOW}incomplete${NC}"
+            printf '%s\n' "${BOLD}  Completed steps:${NC}"
+            limactl shell "$VM_NAME" -- bash -c 'for f in ~/.vmclaude/*.done; do [ -f "$f" ] && echo "    ✓ $(basename "$f" .done)"; done' 2>/dev/null || echo "    (none)"
+        fi
+
+        echo ""
+        printf '%s\n' "${BOLD}Disk usage:${NC}"
+        limactl shell "$VM_NAME" -- df -h / | tail -1 | awk '{printf "  %s used of %s (%s)\n", $3, $2, $5}'
+    else
+        warn "VM is stopped — start it for full info"
+    fi
+}
+
+cmd_help() {
+    cat << EOF
+${BOLD}vm${NC} — CLI wrapper for the vmclaude Lima VM
+
+${BOLD}Usage:${NC} ./vm <command> [args]
+
+${BOLD}Lifecycle:${NC}
+  create          Create the VM and run language setup
+  destroy         Delete the VM (with confirmation)
+  start           Start a stopped VM
+  stop            Stop the VM
+  restart         Stop + start
+
+${BOLD}Development:${NC}
+  shell           Open a shell in the VM
+  exec <cmd>      Run a command in the VM
+  setup           Run/resume language runtime installation
+
+${BOLD}Info:${NC}
+  status          Show VM status + setup progress
+  info            Detailed VM info
+  logs            Tail cloud-init log from inside VM
+
+${BOLD}Snapshots:${NC}
+  snapshot create <tag>   Save VM state
+  snapshot list           List snapshots
+  snapshot apply <tag>    Restore VM state
+  snapshot delete <tag>   Remove a snapshot
+
+${BOLD}Examples:${NC}
+  ./vm create                  # First-time setup
+  ./vm shell                   # Open shell
+  ./vm exec python --version   # Run a command
+  ./vm snapshot create fresh   # Save state
+  ./vm setup                   # Re-run/resume setup
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Main dispatch
+# ---------------------------------------------------------------------------
+cmd="${1:-help}"
+shift || true
+
+case "$cmd" in
+    create)             cmd_create "$@" ;;
+    setup)              cmd_setup "$@" ;;
+    shell|sh)           cmd_shell "$@" ;;
+    start)              cmd_start "$@" ;;
+    stop)               cmd_stop "$@" ;;
+    restart)            cmd_restart "$@" ;;
+    status|st)          cmd_status "$@" ;;
+    destroy|rm|delete)  cmd_destroy "$@" ;;
+    snapshot|snap)      cmd_snapshot "$@" ;;
+    exec|run)           cmd_exec "$@" ;;
+    logs|log)           cmd_logs "$@" ;;
+    info)               cmd_info "$@" ;;
+    help|--help|-h)     cmd_help "$@" ;;
+    *)
+        err "Unknown command: $cmd"
+        echo "Run: ./vm help"
+        exit 1
+        ;;
+esac

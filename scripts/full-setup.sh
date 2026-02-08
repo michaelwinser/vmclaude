@@ -1,12 +1,13 @@
 #!/bin/bash
 # full-setup.sh - Complete VM setup for Claude Code development
 #
-# Usage:
-#   1. Create Ubuntu 24.04 VM in UTM (or any hypervisor)
+# Usage (for non-Lima VMs like UTM):
+#   1. Create Ubuntu 24.04 VM
 #   2. Copy this script to the VM
 #   3. Run: chmod +x full-setup.sh && ./full-setup.sh
 #
-# This script combines base-tools, language-envs, and claude-setup into one.
+# This is the standalone equivalent of cloud-init + setup-languages.sh.
+# Idempotent: safe to re-run on failure or after reboot.
 
 set -euo pipefail
 
@@ -36,182 +37,127 @@ fi
 # =============================================================================
 # PART 1: Base Tools (runs as root)
 # =============================================================================
-echo ""
-echo "=== [1/4] Installing Base Developer Tools ==="
+SYSTEM_SENTINEL="/var/lib/vmclaude-system-provisioned"
 
-export DEBIAN_FRONTEND=noninteractive
-apt-get update
+if [ -f "$SYSTEM_SENTINEL" ]; then
+    echo "=== [1/4] System packages already installed, skipping ==="
+else
+    echo ""
+    echo "=== [1/4] Installing Base Developer Tools ==="
 
-apt-get install -y \
-    build-essential \
-    gcc \
-    g++ \
-    make \
-    cmake \
-    autoconf \
-    automake \
-    libtool \
-    pkg-config \
-    git \
-    curl \
-    wget \
-    jq \
-    ripgrep \
-    fd-find \
-    tree \
-    htop \
-    tmux \
-    vim \
-    unzip \
-    zip \
-    ca-certificates \
-    gnupg \
-    lsb-release \
-    software-properties-common \
-    apt-transport-https
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
 
-# Create symlink for fd
-ln -sf /usr/bin/fdfind /usr/local/bin/fd
+    apt-get install -y \
+        build-essential \
+        gcc \
+        g++ \
+        make \
+        cmake \
+        autoconf \
+        automake \
+        libtool \
+        pkg-config \
+        git \
+        curl \
+        wget \
+        jq \
+        ripgrep \
+        fd-find \
+        tree \
+        htop \
+        tmux \
+        vim \
+        unzip \
+        zip \
+        ca-certificates \
+        gnupg \
+        lsb-release \
+        software-properties-common \
+        apt-transport-https
 
-echo ""
-echo "=== [2/4] Installing Docker ==="
+    # Create symlink for fd
+    ln -sf /usr/bin/fdfind /usr/local/bin/fd
 
-# Add Docker's official GPG key
-install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-chmod a+r /etc/apt/keyrings/docker.gpg
+    echo ""
+    echo "=== [2/4] Installing Docker ==="
 
-# Add Docker repository
-echo \
-  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
-  $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+    # Add Docker's official GPG key (--batch --yes prevents re-run failures)
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+        | gpg --batch --yes --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
 
-apt-get update
-apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    # Add Docker repository
+    echo \
+      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+      $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
 
-# Add user to docker group
-usermod -aG docker "$ACTUAL_USER"
+    apt-get update
+    apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
-systemctl enable docker
-systemctl start docker
+    # Add user to docker group
+    usermod -aG docker "$ACTUAL_USER"
 
-echo ""
-echo "=== Installing Podman ==="
+    systemctl enable docker
+    systemctl start docker
 
-apt-get install -y podman podman-compose
+    echo ""
+    echo "=== Installing Podman ==="
 
-# Configure Podman registries
-mkdir -p /etc/containers
-cat > /etc/containers/registries.conf << 'EOF'
+    apt-get install -y podman podman-compose
+
+    # Configure Podman registries
+    mkdir -p /etc/containers
+    cat > /etc/containers/registries.conf << 'EOF'
 [registries.search]
 registries = ['docker.io', 'quay.io', 'ghcr.io']
 EOF
 
-# =============================================================================
-# PART 2: Language Environments (runs as user)
-# =============================================================================
-echo ""
-echo "=== [3/4] Installing Language Environments ==="
+    echo "=== Installing Language Build Dependencies ==="
 
-# Install language build dependencies
-apt-get install -y \
-    libssl-dev \
-    zlib1g-dev \
-    libbz2-dev \
-    libreadline-dev \
-    libsqlite3-dev \
-    libncursesw5-dev \
-    xz-utils \
-    tk-dev \
-    libxml2-dev \
-    libxmlsec1-dev \
-    libffi-dev \
-    liblzma-dev \
-    libyaml-dev \
-    libncurses5-dev \
-    libgdbm-dev
+    apt-get install -y \
+        libssl-dev \
+        zlib1g-dev \
+        libbz2-dev \
+        libreadline-dev \
+        libsqlite3-dev \
+        libncursesw5-dev \
+        xz-utils \
+        tk-dev \
+        libxml2-dev \
+        libxmlsec1-dev \
+        libffi-dev \
+        liblzma-dev \
+        libyaml-dev \
+        libncurses5-dev \
+        libgdbm-dev
 
-# Create projects directory
-sudo -u "$ACTUAL_USER" mkdir -p "$ACTUAL_HOME/projects"
+    echo "=== Installing Go ==="
 
-# Run language installations as the actual user
-sudo -u "$ACTUAL_USER" bash << USERSCRIPT
-set -euo pipefail
-cd "$ACTUAL_HOME"
+    GO_VERSION="1.22.0"
+    ARCH=$(dpkg --print-architecture)
+    wget -q "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" -O /tmp/go.tar.gz
+    rm -rf /usr/local/go
+    tar -C /usr/local -xzf /tmp/go.tar.gz
+    rm /tmp/go.tar.gz
 
-echo "Installing pyenv..."
-curl -fsSL https://pyenv.run | bash
-
-# Set up pyenv for this script
-export PYENV_ROOT="\$HOME/.pyenv"
-export PATH="\$PYENV_ROOT/bin:\$PATH"
-eval "\$(pyenv init -)"
-
-echo "Installing Python 3.12..."
-pyenv install 3.12
-pyenv global 3.12
-
-echo "Installing pipx..."
-pip install --upgrade pip
-pip install pipx
-"\$HOME/.local/bin/pipx" ensurepath
-
-echo "Installing nvm..."
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
-
-export NVM_DIR="\$HOME/.nvm"
-[ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
-
-echo "Installing Node.js LTS..."
-nvm install --lts
-nvm use --lts
-nvm alias default lts/*
-
-echo "Installing pnpm..."
-npm install -g pnpm
-
-echo "Installing Rust..."
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-source "\$HOME/.cargo/env"
-rustup default stable
-rustup component add rustfmt clippy
-
-echo "Installing Go..."
-GO_VERSION="1.22.0"
-wget -q "https://go.dev/dl/go\${GO_VERSION}.linux-\$(dpkg --print-architecture).tar.gz" -O /tmp/go.tar.gz
-sudo rm -rf /usr/local/go
-sudo tar -C /usr/local -xzf /tmp/go.tar.gz
-rm /tmp/go.tar.gz
-mkdir -p "\$HOME/go"/{bin,src,pkg}
-
-echo "Installing rbenv..."
-git clone https://github.com/rbenv/rbenv.git "\$HOME/.rbenv"
-cd "\$HOME/.rbenv" && src/configure && make -C src
-cd "\$HOME"
-git clone https://github.com/rbenv/ruby-build.git "\$HOME/.rbenv/plugins/ruby-build"
-
-export PATH="\$HOME/.rbenv/bin:\$PATH"
-eval "\$(rbenv init -)"
-
-echo "Installing Ruby 3.3..."
-rbenv install 3.3.0
-rbenv global 3.3.0
-gem install bundler
-
-USERSCRIPT
+    touch "$SYSTEM_SENTINEL"
+fi
 
 # =============================================================================
-# PART 3: Shell Configuration
+# PART 2: Shell Configuration (idempotent with marker)
 # =============================================================================
 echo ""
 echo "=== Configuring shell environment ==="
 
 sudo -u "$ACTUAL_USER" bash << SHELLCONFIG
-cat >> "$ACTUAL_HOME/.bashrc" << 'EOF'
+MARKER="# --- vmclaude-env-begin ---"
+if ! grep -qF "\$MARKER" "$ACTUAL_HOME/.bashrc" 2>/dev/null; then
+    cat >> "$ACTUAL_HOME/.bashrc" << 'EOF'
 
-# ============================================
-# Claude Code Development Environment
-# ============================================
+# --- vmclaude-env-begin ---
+# Claude Code Development Environment (managed by vmclaude)
 
 # Base tools
 export PATH="\$HOME/.local/bin:\$PATH"
@@ -220,18 +166,18 @@ alias ll='ls -alF'
 alias dc='docker compose'
 alias pc='podman-compose'
 
-# pyenv
+# pyenv (guarded — safe before pyenv is installed)
 export PYENV_ROOT="\$HOME/.pyenv"
 [[ -d \$PYENV_ROOT/bin ]] && export PATH="\$PYENV_ROOT/bin:\$PATH"
-eval "\$(pyenv init -)"
-eval "\$(pyenv virtualenv-init -)"
+command -v pyenv >/dev/null && eval "\$(pyenv init -)"
+command -v pyenv >/dev/null && eval "\$(pyenv virtualenv-init -)" 2>/dev/null
 
-# nvm
+# nvm (guarded)
 export NVM_DIR="\$HOME/.nvm"
 [ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
 [ -s "\$NVM_DIR/bash_completion" ] && . "\$NVM_DIR/bash_completion"
 
-# Rust
+# Rust (guarded)
 [ -f "\$HOME/.cargo/env" ] && . "\$HOME/.cargo/env"
 
 # Go
@@ -239,17 +185,150 @@ export PATH=\$PATH:/usr/local/go/bin
 export GOPATH=\$HOME/go
 export PATH=\$PATH:\$GOPATH/bin
 
-# rbenv
-export PATH="\$HOME/.rbenv/bin:\$PATH"
-eval "\$(rbenv init -)"
+# rbenv (guarded)
+[[ -d \$HOME/.rbenv/bin ]] && export PATH="\$HOME/.rbenv/bin:\$PATH"
+command -v rbenv >/dev/null && eval "\$(rbenv init -)"
 
 # Claude Code
 alias claude-unsafe='claude --dangerously-skip-permissions'
-claude-dev() {
-    claude --dangerously-skip-permissions "\$@"
-}
+claude-dev() { claude --dangerously-skip-permissions "\$@"; }
+# --- vmclaude-env-end ---
 EOF
+    echo "  .bashrc configured"
+else
+    echo "  .bashrc already configured, skipping"
+fi
 SHELLCONFIG
+
+# Create directories
+sudo -u "$ACTUAL_USER" mkdir -p "$ACTUAL_HOME/projects"
+sudo -u "$ACTUAL_USER" mkdir -p "$ACTUAL_HOME/go"/{bin,src,pkg}
+sudo -u "$ACTUAL_USER" mkdir -p "$ACTUAL_HOME/.vmclaude"
+
+# =============================================================================
+# PART 3: Language Environments (runs as user, with sentinel files)
+# =============================================================================
+echo ""
+echo "=== [3/4] Installing Language Environments ==="
+
+sudo -u "$ACTUAL_USER" bash << USERSCRIPT
+set -euo pipefail
+cd "$ACTUAL_HOME"
+
+SENTINEL_DIR="$ACTUAL_HOME/.vmclaude"
+
+step_done() { [ -f "\$SENTINEL_DIR/\$1.done" ]; }
+mark_done() { touch "\$SENTINEL_DIR/\$1.done"; }
+
+# --- pyenv ---
+if step_done pyenv; then
+    echo "  pyenv: already installed"
+else
+    echo "Installing pyenv..."
+    if [ -d "\$HOME/.pyenv" ]; then
+        cd "\$HOME/.pyenv" && git pull --ff-only && cd ~
+    else
+        curl -fsSL https://pyenv.run | bash
+    fi
+    mark_done pyenv
+fi
+
+export PYENV_ROOT="\$HOME/.pyenv"
+export PATH="\$PYENV_ROOT/bin:\$PATH"
+eval "\$(pyenv init -)"
+
+# --- Python ---
+if step_done python; then
+    echo "  Python 3.12: already installed"
+else
+    echo "Installing Python 3.12..."
+    pyenv install -s 3.12
+    pyenv global 3.12
+    pip install --upgrade pip
+    curl -sSL https://install.python-poetry.org | python3 -
+    mark_done python
+fi
+
+# --- nvm ---
+if step_done nvm; then
+    echo "  nvm: already installed"
+else
+    echo "Installing nvm..."
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+    mark_done nvm
+fi
+
+export NVM_DIR="\$HOME/.nvm"
+[ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
+
+# --- Node ---
+if step_done node; then
+    echo "  Node.js LTS: already installed"
+else
+    echo "Installing Node.js LTS..."
+    nvm install --lts
+    nvm use --lts
+    nvm alias default lts/*
+    mark_done node
+fi
+
+# --- pnpm ---
+if step_done pnpm; then
+    echo "  pnpm: already installed"
+else
+    echo "Installing pnpm..."
+    npm install -g pnpm
+    mark_done pnpm
+fi
+
+# --- Rust ---
+if step_done rust; then
+    echo "  Rust: already installed"
+else
+    echo "Installing Rust..."
+    if [ -f "\$HOME/.cargo/env" ]; then
+        source "\$HOME/.cargo/env"
+    else
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        source "\$HOME/.cargo/env"
+    fi
+    rustup default stable
+    rustup component add rustfmt clippy
+    mark_done rust
+fi
+
+# --- rbenv ---
+if step_done rbenv; then
+    echo "  rbenv: already installed"
+else
+    echo "Installing rbenv..."
+    if [ -d "\$HOME/.rbenv" ]; then
+        cd "\$HOME/.rbenv" && git pull --ff-only && cd ~
+    else
+        git clone https://github.com/rbenv/rbenv.git "\$HOME/.rbenv"
+        cd "\$HOME/.rbenv" && src/configure && make -C src && cd ~
+    fi
+    if [ ! -d "\$HOME/.rbenv/plugins/ruby-build" ]; then
+        git clone https://github.com/rbenv/ruby-build.git "\$HOME/.rbenv/plugins/ruby-build"
+    fi
+    mark_done rbenv
+fi
+
+export PATH="\$HOME/.rbenv/bin:\$PATH"
+eval "\$(rbenv init -)"
+
+# --- Ruby ---
+if step_done ruby; then
+    echo "  Ruby 3.3: already installed"
+else
+    echo "Installing Ruby 3.3..."
+    rbenv install -s 3.3.0
+    rbenv global 3.3.0
+    gem install bundler
+    mark_done ruby
+fi
+
+USERSCRIPT
 
 # =============================================================================
 # PART 4: Claude Code Setup
@@ -258,12 +337,21 @@ echo ""
 echo "=== [4/4] Installing Claude Code ==="
 
 sudo -u "$ACTUAL_USER" bash << CLAUDESCRIPT
+set -euo pipefail
+
+SENTINEL_DIR="$ACTUAL_HOME/.vmclaude"
+
 # Source nvm to get npm
 export NVM_DIR="\$HOME/.nvm"
 [ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
 
-echo "Installing Claude Code CLI..."
-npm install -g @anthropic-ai/claude-code
+if [ -f "\$SENTINEL_DIR/claude-code.done" ]; then
+    echo "  Claude Code: already installed"
+else
+    echo "Installing Claude Code CLI..."
+    npm install -g @anthropic-ai/claude-code
+    touch "\$SENTINEL_DIR/claude-code.done"
+fi
 
 echo "Configuring Claude permissions..."
 mkdir -p "\$HOME/.claude"
@@ -294,8 +382,8 @@ cat > "\$HOME/CLAUDE.md" << 'CLAUDEMD'
 ## Isolation Requirements (MANDATORY)
 
 ### Python
-- **Always use venv**: \`python -m venv .venv && source .venv/bin/activate\`
-- Never \`pip install\` without an active venv
+- **Always use poetry**: \`poetry init\` then \`poetry add <package>\`
+- Never \`pip install\` directly — use \`poetry add\` instead
 
 ### Node.js
 - Use project-local \`node_modules\`
@@ -315,25 +403,12 @@ cat > "\$HOME/CLAUDE.md" << 'CLAUDEMD'
 - Build artifacts inside containers for reproducibility
 
 ## What NOT To Do
-- Never \`pip install\` without a venv
+- Never \`pip install\` directly — use \`poetry add\`
 - Never \`npm install -g\` for project dependencies
 - Never install language runtimes globally (use version managers)
 CLAUDEMD
 
-echo "Creating init-project helper..."
-mkdir -p "\$HOME/.local/bin"
-cat > "\$HOME/.local/bin/init-project" << 'INITSCRIPT'
-#!/bin/bash
-echo "Usage: init-project <type> <name>"
-echo "Types: python, node, go, rust, ruby"
-echo ""
-echo "Example:"
-echo "  init-project python my-app"
-echo "  cd my-app"
-echo "  source .venv/bin/activate"
-INITSCRIPT
-chmod +x "\$HOME/.local/bin/init-project"
-
+touch "\$SENTINEL_DIR/setup-complete"
 CLAUDESCRIPT
 
 # =============================================================================

@@ -1,4 +1,4 @@
-# VM Template for Claude Code Development
+# vmclaude — Lima VM for Claude Code Development
 
 A reproducible VM template using Lima for development with Claude Code in dangerous mode (no permission prompts).
 
@@ -6,10 +6,10 @@ A reproducible VM template using Lima for development with Claude Code in danger
 
 ```
 Host (macOS)
+├── ./vm              ← CLI wrapper (all lifecycle commands)
 └── Lima VM (Ubuntu 24.04 LTS)
-    ├── Claude Code (dangerous mode)
-    ├── Docker & Podman
-    ├── pyenv, nvm, rustup, Go, rbenv
+    ├── Phase 1: cloud-init (apt packages, Docker, Podman, Go, build deps)
+    ├── Phase 2: setup-languages.sh (pyenv, nvm, rustup, rbenv, Claude Code)
     ├── ~/CLAUDE.md (development rules)
     └── ~/projects ← shared with host
 ```
@@ -17,54 +17,97 @@ Host (macOS)
 ## Prerequisites
 
 - macOS (Apple Silicon or Intel)
-- [Homebrew](https://brew.sh/)
+- [Lima](https://lima-vm.io/): `brew install lima`
 
 ## Quick Start
 
-### 1. Install Lima
-
-```bash
-brew install lima
-```
-
-### 2. Start the VM
-
 ```bash
 cd /path/to/vmclaude
-limactl start claude-dev.yaml
-```
 
-This downloads Ubuntu 24.04, provisions all tools, and configures Claude Code. First run takes 10-15 minutes.
+# Create VM + install everything (~15 min first time)
+./vm create
 
-### 3. Enter the VM
+# Open a shell
+./vm shell
 
-```bash
-limactl shell claude-dev
-```
-
-Or use the shortcut (after first start):
-```bash
-lima claude-dev
-```
-
-### 4. Authenticate Claude
-
-```bash
+# Authenticate Claude
 claude auth
+
+# Start developing
+claude-dev    # dangerous mode
 ```
 
-### 5. Start developing
+## `vm` Commands
 
-```bash
-claude-dev  # Starts Claude in dangerous mode
-```
+### Lifecycle
+
+| Command | Description |
+|---------|-------------|
+| `./vm create` | Create VM and run language setup |
+| `./vm destroy` | Delete VM (with confirmation) |
+| `./vm start` | Start a stopped VM |
+| `./vm stop` | Stop the VM |
+| `./vm restart` | Stop + start |
+
+### Development
+
+| Command | Description |
+|---------|-------------|
+| `./vm shell` | Open a shell in the VM |
+| `./vm exec <cmd>` | Run a command in the VM |
+| `./vm setup` | Run/resume language runtime installation |
+
+### Info
+
+| Command | Description |
+|---------|-------------|
+| `./vm status` | Show VM status + setup progress |
+| `./vm info` | Detailed VM info (disk, setup steps) |
+| `./vm logs` | Tail cloud-init log from inside VM |
+
+### Snapshots
+
+| Command | Description |
+|---------|-------------|
+| `./vm snapshot create <tag>` | Save VM state |
+| `./vm snapshot list` | List snapshots |
+| `./vm snapshot apply <tag>` | Restore VM state |
+| `./vm snapshot delete <tag>` | Remove a snapshot |
+
+## Two-Phase Provisioning
+
+### Phase 1: cloud-init (automatic, fast)
+
+Runs during `./vm create` via Lima's cloud-init. Installs system packages as root:
+
+- Build essentials (gcc, make, cmake, etc.)
+- Docker + Docker Compose
+- Podman + podman-compose
+- Go 1.22 (binary download)
+- Language build dependencies (libssl-dev, zlib1g-dev, etc.)
+- User shell config (.bashrc with guarded runtime entries)
+- Claude Code settings + CLAUDE.md
+
+Uses a sentinel file (`/var/lib/vmclaude-system-provisioned`) so it **skips entirely on VM restart**.
+
+### Phase 2: Language setup (interactive, resumable)
+
+Runs via `./vm setup` (called automatically after create). Compiles/installs runtimes with full TTY output:
+
+- pyenv + Python 3.12
+- nvm + Node.js LTS + pnpm
+- Rust (rustup + stable toolchain)
+- rbenv + Ruby 3.3
+- Claude Code CLI
+
+Each step uses a sentinel file in `~/.vmclaude/`. If setup fails partway through, `./vm setup` picks up where it left off.
 
 ## Installed Tools
 
 | Category | Tools |
 |----------|-------|
 | Containers | Docker, Docker Compose, Podman, podman-compose |
-| Python | pyenv, Python 3.12, pipx |
+| Python | pyenv, Python 3.12, poetry |
 | Node.js | nvm, Node LTS, pnpm |
 | Rust | rustup, stable toolchain, rustfmt, clippy |
 | Go | Go 1.22 |
@@ -72,8 +115,6 @@ claude-dev  # Starts Claude in dangerous mode
 | Utilities | ripgrep, fd, jq, htop, tmux, vim |
 
 ## File Sharing
-
-Lima automatically shares directories between host and VM:
 
 | Host Path | VM Path | Writable |
 |-----------|---------|----------|
@@ -93,51 +134,20 @@ Common development ports are automatically forwarded:
 - 8000-8010 (Django, FastAPI)
 - 8080-8090 (General web)
 
-Services running in the VM are accessible at `localhost:<port>` on your Mac.
-
-## VM Management
-
-```bash
-# Start the VM
-limactl start claude-dev.yaml
-
-# Enter the VM shell
-limactl shell claude-dev
-
-# Stop the VM
-limactl stop claude-dev
-
-# Restart the VM
-limactl stop claude-dev && limactl start claude-dev
-
-# Delete the VM completely
-limactl delete claude-dev
-
-# List all VMs
-limactl list
-
-# Check VM status
-limactl info claude-dev
-```
-
 ## Using Claude Code
 
 ```bash
-# Normal mode (with prompts)
-claude
-
-# Dangerous mode (no prompts) - use these in the VM
-claude-dev
-claude-unsafe
-claude --dangerously-skip-permissions
+claude              # Normal mode (with prompts)
+claude-dev          # Dangerous mode (no prompts)
+claude-unsafe       # Alias for dangerous mode
 ```
 
 ## Development Guidelines
 
 See `~/CLAUDE.md` inside the VM. Key rules:
 
-1. **Python**: Always use venv before pip install
-2. **Node.js**: Use project-local node_modules
+1. **Python**: Always use poetry for dependency management
+2. **Node.js**: Use project-local node_modules, prefer pnpm
 3. **Go**: Use Go modules (`go mod init`)
 4. **Rust**: Use Cargo
 5. **Ruby**: Use Bundler
@@ -154,11 +164,7 @@ memory: "16GiB"
 disk: "128GiB"
 ```
 
-Then recreate the VM:
-```bash
-limactl delete claude-dev
-limactl start claude-dev.yaml
-```
+Then recreate: `./vm destroy && ./vm create`
 
 ### Add Port Forwarding
 
@@ -168,79 +174,55 @@ Edit `claude-dev.yaml`:
 portForwards:
   - guestPort: 5432
     hostPort: 5432
-  - guestPortRange: [9000, 9010]
-    hostPortRange: [9000, 9010]
-```
-
-### Add Mounts
-
-Edit `claude-dev.yaml`:
-
-```yaml
-mounts:
-  - location: "~/my-other-folder"
-    writable: true
 ```
 
 ## Troubleshooting
 
-### VM won't start
+### Setup failed partway through
 ```bash
-# Check Lima status
-limactl list
-
-# View logs
-limactl logs claude-dev
-
-# Try with QEMU explicitly (if VZ issues)
-# Edit claude-dev.yaml: vmType: "qemu"
+./vm setup    # Re-run — completed steps are skipped
 ```
 
-### Provisioning failed
+### VM won't start
 ```bash
-# Delete and recreate
-limactl delete claude-dev
-limactl start claude-dev.yaml
+./vm status          # Check current state
+./vm logs            # View cloud-init output
+limactl logs claude-dev   # View Lima logs
 ```
 
 ### Docker permission denied
 ```bash
-# Inside VM, re-add to docker group
+# Inside VM
 sudo usermod -aG docker $USER
-# Then exit and re-enter
 exit
-limactl shell claude-dev
+./vm shell
 ```
 
-### Slow file access
-Lima uses different mount backends. For better performance on large codebases:
-```yaml
-mounts:
-  - location: "~/projects"
-    writable: true
-    9p:
-      cache: "mmap"
+### Full reset
+```bash
+./vm destroy
+./vm create
 ```
 
 ## File Structure
 
 ```
 vmclaude/
-├── claude-dev.yaml          # Lima VM configuration
+├── vm                           # CLI wrapper (start here)
+├── claude-dev.yaml              # Lima VM configuration
 ├── README.md
-├── scripts/                  # Standalone scripts (optional)
-│   └── full-setup.sh        # For manual VM setup
+├── scripts/
+│   ├── setup-languages.sh       # Phase 2: idempotent language installer
+│   ├── full-setup.sh            # Standalone setup (non-Lima VMs)
+│   └── legacy/                  # Old split scripts (reference only)
+│       ├── base-tools.sh
+│       ├── language-envs.sh
+│       └── claude-setup.sh
 ├── templates/
-│   ├── CLAUDE.md            # Development rules
-│   └── devcontainers/       # VS Code devcontainer templates
-│       ├── python/
-│       ├── node/
-│       ├── go/
-│       ├── rust/
-│       ├── ruby/
-│       └── base/
+│   ├── CLAUDE.md
+│   └── devcontainers/
 └── config/
-    └── claude-settings.json  # Claude permissions
+    └── claude-settings.json
 ```
 
 ## Security Notes
@@ -253,4 +235,4 @@ This VM runs Claude Code in **dangerous mode**:
 **Recommendations:**
 - Keep sensitive data outside `~/projects`
 - Use separate VMs for different security contexts
-- Periodically delete and recreate the VM
+- Periodically snapshot or recreate the VM
