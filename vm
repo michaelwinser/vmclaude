@@ -11,6 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VM_NAME="claude-dev"
 YAML_FILE="$SCRIPT_DIR/claude-dev.yaml"
 SETUP_SCRIPT="$SCRIPT_DIR/scripts/setup-languages.sh"
+CACHE_DIR="$HOME/.vmclaude-cache"
 
 # ---------------------------------------------------------------------------
 # Colors
@@ -68,6 +69,8 @@ cmd_create() {
         exit 1
     fi
     info "Creating VM '$VM_NAME'..."
+    info "Ensuring persistent cache directory..."
+    mkdir -p "$CACHE_DIR"/{runtimes,pip,poetry,npm,pnpm,cargo/registry,cargo/git,go/mod,go/build}
     limactl start "$YAML_FILE" --name "$VM_NAME" --tty=false
     ok "VM created. Running language setup..."
     echo ""
@@ -240,6 +243,51 @@ cmd_info() {
     fi
 }
 
+cmd_cache() {
+    local subcmd="${1:-}"
+    case "$subcmd" in
+        clear)
+            if [ ! -d "$CACHE_DIR" ]; then
+                warn "Cache directory does not exist: $CACHE_DIR"
+                return
+            fi
+            local size
+            size=$(du -sh "$CACHE_DIR" 2>/dev/null | cut -f1)
+            printf '%s\n' "${RED}This will delete all cached data ($size) in $CACHE_DIR${NC}"
+            read -rp "Are you sure? [y/N] " confirm
+            if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                rm -rf "${CACHE_DIR:?}"/*
+                ok "Cache cleared."
+            else
+                info "Cancelled."
+            fi
+            ;;
+        status)
+            if [ ! -d "$CACHE_DIR" ]; then
+                echo "Cache directory does not exist: $CACHE_DIR"
+                return
+            fi
+            printf '%s\n' "${BOLD}Cache: $CACHE_DIR${NC}"
+            du -sh "$CACHE_DIR" 2>/dev/null | awk '{printf "  Total size: %s\n", $1}'
+            echo ""
+            for d in runtimes pip poetry npm pnpm cargo go; do
+                if [ -d "$CACHE_DIR/$d" ]; then
+                    du -sh "$CACHE_DIR/$d" 2>/dev/null | awk -v name="$d" '{printf "  %-12s %s\n", name, $1}'
+                fi
+            done
+            if [ -d "$CACHE_DIR/runtimes" ]; then
+                echo ""
+                echo "Cached runtimes:"
+                find "$CACHE_DIR/runtimes" -name '*.tar.gz' -exec basename {} \; 2>/dev/null | sed 's/^/  /' || echo "  (none)"
+            fi
+            ;;
+        *)
+            echo "Usage: ./vm cache <clear|status>"
+            exit 1
+            ;;
+    esac
+}
+
 cmd_help() {
     cat << EOF
 ${BOLD}vm${NC} — CLI wrapper for the vmclaude Lima VM
@@ -269,6 +317,10 @@ ${BOLD}Snapshots:${NC}
   snapshot apply <tag>    Restore VM state
   snapshot delete <tag>   Remove a snapshot
 
+${BOLD}Cache:${NC}
+  cache status            Show cache size and contents
+  cache clear             Delete all cached data
+
 ${BOLD}Examples:${NC}
   ./vm create                  # First-time setup
   ./vm shell                   # Open shell
@@ -294,6 +346,7 @@ case "$cmd" in
     status|st)          cmd_status "$@" ;;
     destroy|rm|delete)  cmd_destroy "$@" ;;
     snapshot|snap)      cmd_snapshot "$@" ;;
+    cache)              cmd_cache "$@" ;;
     exec|run)           cmd_exec "$@" ;;
     logs|log)           cmd_logs "$@" ;;
     info)               cmd_info "$@" ;;

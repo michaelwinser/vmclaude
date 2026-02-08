@@ -114,6 +114,10 @@ else
 registries = ['docker.io', 'quay.io', 'ghcr.io']
 EOF
 
+    echo "=== Installing Python ==="
+
+    apt-get install -y python3-pip python3-venv python-is-python3 pipx
+
     echo "=== Installing Language Build Dependencies ==="
 
     apt-get install -y \
@@ -166,12 +170,6 @@ alias ll='ls -alF'
 alias dc='docker compose'
 alias pc='podman-compose'
 
-# pyenv (guarded — safe before pyenv is installed)
-export PYENV_ROOT="\$HOME/.pyenv"
-[[ -d \$PYENV_ROOT/bin ]] && export PATH="\$PYENV_ROOT/bin:\$PATH"
-command -v pyenv >/dev/null && eval "\$(pyenv init -)"
-command -v pyenv >/dev/null && eval "\$(pyenv virtualenv-init -)" 2>/dev/null
-
 # nvm (guarded)
 export NVM_DIR="\$HOME/.nvm"
 [ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
@@ -216,36 +214,19 @@ set -euo pipefail
 cd "$ACTUAL_HOME"
 
 SENTINEL_DIR="$ACTUAL_HOME/.vmclaude"
+CACHE_DIR="\$HOME/.vmclaude-cache"
+cache_available() { [ -d "\$CACHE_DIR/runtimes" ]; }
 
 step_done() { [ -f "\$SENTINEL_DIR/\$1.done" ]; }
 mark_done() { touch "\$SENTINEL_DIR/\$1.done"; }
 
-# --- pyenv ---
-if step_done pyenv; then
-    echo "  pyenv: already installed"
-else
-    echo "Installing pyenv..."
-    if [ -d "\$HOME/.pyenv" ]; then
-        cd "\$HOME/.pyenv" && git pull --ff-only && cd ~
-    else
-        curl -fsSL https://pyenv.run | bash
-    fi
-    mark_done pyenv
-fi
-
-export PYENV_ROOT="\$HOME/.pyenv"
-export PATH="\$PYENV_ROOT/bin:\$PATH"
-eval "\$(pyenv init -)"
-
-# --- Python ---
+# --- Python (system) + Poetry ---
 if step_done python; then
-    echo "  Python 3.12: already installed"
+    echo "  Python + Poetry: already installed"
 else
-    echo "Installing Python 3.12..."
-    pyenv install -s 3.12
-    pyenv global 3.12
-    pip install --upgrade pip
-    curl -sSL https://install.python-poetry.org | python3 -
+    echo "Installing Poetry (using system Python)..."
+    pipx install poetry
+    pipx ensurepath
     mark_done python
 fi
 
@@ -259,6 +240,8 @@ else
 fi
 
 export NVM_DIR="\$HOME/.nvm"
+# nvm uses uninitialized variables internally — disable nounset around it
+set +u
 [ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
 
 # --- Node ---
@@ -267,10 +250,10 @@ if step_done node; then
 else
     echo "Installing Node.js LTS..."
     nvm install --lts
-    nvm use --lts
     nvm alias default lts/*
     mark_done node
 fi
+set -u
 
 # --- pnpm ---
 if step_done pnpm; then
@@ -306,7 +289,6 @@ else
         cd "\$HOME/.rbenv" && git pull --ff-only && cd ~
     else
         git clone https://github.com/rbenv/rbenv.git "\$HOME/.rbenv"
-        cd "\$HOME/.rbenv" && src/configure && make -C src && cd ~
     fi
     if [ ! -d "\$HOME/.rbenv/plugins/ruby-build" ]; then
         git clone https://github.com/rbenv/ruby-build.git "\$HOME/.rbenv/plugins/ruby-build"
@@ -321,9 +303,23 @@ eval "\$(rbenv init -)"
 if step_done ruby; then
     echo "  Ruby 3.3: already installed"
 else
-    echo "Installing Ruby 3.3..."
-    rbenv install -s 3.3.0
-    rbenv global 3.3.0
+    ruby_ver="3.3.0"
+    cache_tar="\$CACHE_DIR/runtimes/ruby-\${ruby_ver}-\$(uname -m).tar.gz"
+
+    if cache_available && [ -f "\$cache_tar" ]; then
+        echo "Restoring Ruby \$ruby_ver from cache..."
+        mkdir -p "\$HOME/.rbenv/versions"
+        tar -xzf "\$cache_tar" -C "\$HOME/.rbenv/versions/"
+        rbenv global "\$ruby_ver"
+    else
+        echo "Installing Ruby 3.3..."
+        rbenv install -s "\$ruby_ver"
+        rbenv global "\$ruby_ver"
+        if cache_available; then
+            echo "Caching compiled Ruby \$ruby_ver..."
+            tar -czf "\$cache_tar" -C "\$HOME/.rbenv/versions" "\$ruby_ver"
+        fi
+    fi
     gem install bundler
     mark_done ruby
 fi
@@ -341,9 +337,11 @@ set -euo pipefail
 
 SENTINEL_DIR="$ACTUAL_HOME/.vmclaude"
 
-# Source nvm to get npm
+# Source nvm to get npm (nvm needs nounset disabled)
 export NVM_DIR="\$HOME/.nvm"
+set +u
 [ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
+set -u
 
 if [ -f "\$SENTINEL_DIR/claude-code.done" ]; then
     echo "  Claude Code: already installed"
@@ -421,7 +419,7 @@ echo "=============================================="
 echo ""
 echo "Installed:"
 echo "  - Docker & Podman"
-echo "  - pyenv + Python 3.12"
+echo "  - Python 3.12 (system) + Poetry"
 echo "  - nvm + Node.js LTS + pnpm"
 echo "  - rustup + Rust stable"
 echo "  - Go 1.22"

@@ -24,6 +24,8 @@ mounts:
     writable: false
   - location: "~/projects"
     writable: true
+  - location: "~/.vmclaude-cache"
+    writable: true
   - location: "/tmp/lima"
     writable: true
 
@@ -97,6 +99,9 @@ provision:
       registries = ['docker.io', 'quay.io', 'ghcr.io']
       REGEOF
 
+      echo "=== Installing Python ==="
+      apt-get install -y python3-pip python3-venv python-is-python3 pipx
+
       echo "=== Installing Language Build Dependencies ==="
       apt-get install -y \
         libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev \
@@ -135,12 +140,6 @@ provision:
       alias dc='docker compose'
       alias pc='podman-compose'
 
-      # pyenv (guarded — safe before pyenv is installed)
-      export PYENV_ROOT="$HOME/.pyenv"
-      [[ -d $PYENV_ROOT/bin ]] && export PATH="$PYENV_ROOT/bin:$PATH"
-      command -v pyenv >/dev/null && eval "$(pyenv init -)"
-      command -v pyenv >/dev/null && eval "$(pyenv virtualenv-init -)" 2>/dev/null
-
       # nvm (guarded)
       export NVM_DIR="$HOME/.nvm"
       [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
@@ -158,6 +157,17 @@ provision:
       [[ -d $HOME/.rbenv/bin ]] && export PATH="$HOME/.rbenv/bin:$PATH"
       command -v rbenv >/dev/null && eval "$(rbenv init -)"
 
+      # Package manager caches (pointed at persistent host mount)
+      VMCACHE="$HOME/.vmclaude-cache"
+      if [ -d "$VMCACHE" ]; then
+        export PIP_CACHE_DIR="$VMCACHE/pip"
+        export POETRY_CACHE_DIR="$VMCACHE/poetry"
+        export npm_config_cache="$VMCACHE/npm"
+        export PNPM_STORE_DIR="$VMCACHE/pnpm"
+        export GOMODCACHE="$VMCACHE/go/mod"
+        export GOCACHE="$VMCACHE/go/build"
+      fi
+
       # Claude Code
       alias claude-unsafe='claude --dangerously-skip-permissions'
       claude-dev() { claude --dangerously-skip-permissions "$@"; }
@@ -172,6 +182,17 @@ provision:
       mkdir -p ~/go/{bin,src,pkg}
       mkdir -p ~/projects
       mkdir -p ~/.vmclaude
+
+      # Cargo cache symlinks (Cargo doesn't support a cache-only env var)
+      if [ -d "$HOME/.vmclaude-cache/cargo" ]; then
+        mkdir -p "$HOME/.cargo"
+        for d in registry git; do
+          if [ -d "$HOME/.vmclaude-cache/cargo/$d" ] && [ ! -L "$HOME/.cargo/$d" ]; then
+            rm -rf "$HOME/.cargo/$d"
+            ln -s "$HOME/.vmclaude-cache/cargo/$d" "$HOME/.cargo/$d"
+          fi
+        done
+      fi
 
       # Claude Code settings (overwrite-safe — always set canonical permissions)
       mkdir -p ~/.claude

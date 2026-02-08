@@ -9,7 +9,7 @@ Host (macOS)
 ├── ./vm              ← CLI wrapper (all lifecycle commands)
 └── Lima VM (Ubuntu 24.04 LTS)
     ├── Phase 1: cloud-init (apt packages, Docker, Podman, Go, build deps)
-    ├── Phase 2: setup-languages.sh (pyenv, nvm, rustup, rbenv, Claude Code)
+    ├── Phase 2: setup-languages.sh (poetry, nvm, rustup, rbenv, Claude Code)
     ├── ~/CLAUDE.md (development rules)
     └── ~/projects ← shared with host
 ```
@@ -74,6 +74,13 @@ claude-dev    # dangerous mode
 | `./vm snapshot apply <tag>` | Restore VM state |
 | `./vm snapshot delete <tag>` | Remove a snapshot |
 
+### Cache
+
+| Command | Description |
+|---------|-------------|
+| `./vm cache status` | Show cache size and contents |
+| `./vm cache clear` | Delete all cached data |
+
 ## Two-Phase Provisioning
 
 ### Phase 1: cloud-init (automatic, fast)
@@ -83,6 +90,7 @@ Runs during `./vm create` via Lima's cloud-init. Installs system packages as roo
 - Build essentials (gcc, make, cmake, etc.)
 - Docker + Docker Compose
 - Podman + podman-compose
+- Python 3.12 (system package with pip and venv)
 - Go 1.22 (binary download)
 - Language build dependencies (libssl-dev, zlib1g-dev, etc.)
 - User shell config (.bashrc with guarded runtime entries)
@@ -94,7 +102,7 @@ Uses a sentinel file (`/var/lib/vmclaude-system-provisioned`) so it **skips enti
 
 Runs via `./vm setup` (called automatically after create). Compiles/installs runtimes with full TTY output:
 
-- pyenv + Python 3.12
+- Python 3.12 (system) + Poetry
 - nvm + Node.js LTS + pnpm
 - Rust (rustup + stable toolchain)
 - rbenv + Ruby 3.3
@@ -107,7 +115,7 @@ Each step uses a sentinel file in `~/.vmclaude/`. If setup fails partway through
 | Category | Tools |
 |----------|-------|
 | Containers | Docker, Docker Compose, Podman, podman-compose |
-| Python | pyenv, Python 3.12, poetry |
+| Python | Python 3.12 (system), poetry |
 | Node.js | nvm, Node LTS, pnpm |
 | Rust | rustup, stable toolchain, rustfmt, clippy |
 | Go | Go 1.22 |
@@ -120,6 +128,7 @@ Each step uses a sentinel file in `~/.vmclaude/`. If setup fails partway through
 |-----------|---------|----------|
 | `~` | `~` | No |
 | `~/projects` | `~/projects` | Yes |
+| `~/.vmclaude-cache` | `~/.vmclaude-cache` | Yes |
 | `/tmp/lima` | `/tmp/lima` | Yes |
 
 Work in `~/projects` for full read-write access.
@@ -133,6 +142,33 @@ Common development ports are automatically forwarded:
 - 5000-5010 (Flask, custom)
 - 8000-8010 (Django, FastAPI)
 - 8080-8090 (General web)
+
+## Persistent Dependency Cache
+
+A host-side cache at `~/.vmclaude-cache` persists across `./vm destroy && ./vm create` cycles, dramatically speeding up recreation:
+
+- **Compiled runtimes** — Ruby tarballs are cached after first compilation. Subsequent creates restore from cache in seconds instead of recompiling (~5 min). Python uses the system package so no compilation is needed.
+- **Package manager caches** — pip, poetry, npm, pnpm, cargo, and Go module/build caches are pointed at the persistent mount via environment variables. Downloaded packages survive VM recreation.
+
+```
+~/.vmclaude-cache/
+├── runtimes/          # Compiled runtime tarballs
+├── pip/               # PIP_CACHE_DIR
+├── poetry/            # POETRY_CACHE_DIR
+├── npm/               # npm_config_cache
+├── pnpm/              # PNPM_STORE_DIR
+├── cargo/             # Symlinked: ~/.cargo/registry, ~/.cargo/git
+└── go/                # GOMODCACHE + GOCACHE
+    ├── mod/
+    └── build/
+```
+
+### Cache management
+
+```bash
+./vm cache status    # Show cache size and contents
+./vm cache clear     # Delete all cached data (next create recompiles)
+```
 
 ## Using Claude Code
 

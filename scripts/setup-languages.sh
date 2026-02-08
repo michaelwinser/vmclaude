@@ -31,36 +31,21 @@ skip()  { echo -e "${YELLOW}  ⏭${NC} $* (already installed)"; }
 fail()  { echo -e "${RED}  ✗${NC} $*"; }
 
 # ---------------------------------------------------------------------------
-# pyenv
+# Persistent cache helpers
 # ---------------------------------------------------------------------------
-install_pyenv() {
-    if step_done pyenv; then skip "pyenv"; return 0; fi
-    info "Installing pyenv..."
-    if [ -d "$HOME/.pyenv" ]; then
-        # Already cloned but sentinel missing — update instead
-        cd "$HOME/.pyenv" && git pull --ff-only && cd ~
-    else
-        curl -fsSL https://pyenv.run | bash
-    fi
-    mark_done pyenv
-    ok "pyenv"
-}
+CACHE_DIR="$HOME/.vmclaude-cache"
+cache_available() { [ -d "$CACHE_DIR/runtimes" ]; }
 
 # ---------------------------------------------------------------------------
-# Python 3.12
+# Python (system) + Poetry
 # ---------------------------------------------------------------------------
 install_python() {
-    if step_done python; then skip "Python 3.12"; return 0; fi
-    info "Installing Python 3.12 (this takes a few minutes)..."
-    export PYENV_ROOT="$HOME/.pyenv"
-    export PATH="$PYENV_ROOT/bin:$PATH"
-    eval "$(pyenv init -)"
-    pyenv install -s 3.12
-    pyenv global 3.12
-    pip install --upgrade pip
-    curl -sSL https://install.python-poetry.org | python3 -
+    if step_done python; then skip "Python + Poetry"; return 0; fi
+    info "Installing Poetry (using system Python)..."
+    pipx install poetry
+    pipx ensurepath
     mark_done python
-    ok "Python $(python --version 2>&1)"
+    ok "Python $(python --version 2>&1), Poetry"
 }
 
 # ---------------------------------------------------------------------------
@@ -86,11 +71,13 @@ install_node() {
     if step_done node; then skip "Node.js LTS"; return 0; fi
     info "Installing Node.js LTS..."
     export NVM_DIR="$HOME/.nvm"
+    # nvm uses uninitialized variables internally — disable nounset around it
+    set +u
     # shellcheck source=/dev/null
     [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
     nvm install --lts
-    nvm use --lts
     nvm alias default lts/*
+    set -u
     mark_done node
     ok "Node $(node --version 2>&1)"
 }
@@ -102,8 +89,10 @@ install_pnpm() {
     if step_done pnpm; then skip "pnpm"; return 0; fi
     info "Installing pnpm..."
     export NVM_DIR="$HOME/.nvm"
+    set +u
     # shellcheck source=/dev/null
     [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+    set -u
     npm install -g pnpm
     mark_done pnpm
     ok "pnpm $(pnpm --version 2>&1)"
@@ -140,7 +129,6 @@ install_rbenv() {
         cd "$HOME/.rbenv" && git pull --ff-only && cd ~
     else
         git clone https://github.com/rbenv/rbenv.git "$HOME/.rbenv"
-        cd "$HOME/.rbenv" && src/configure && make -C src && cd ~
     fi
     if [ ! -d "$HOME/.rbenv/plugins/ruby-build" ]; then
         git clone https://github.com/rbenv/ruby-build.git "$HOME/.rbenv/plugins/ruby-build"
@@ -156,11 +144,29 @@ install_rbenv() {
 # ---------------------------------------------------------------------------
 install_ruby() {
     if step_done ruby; then skip "Ruby 3.3"; return 0; fi
-    info "Installing Ruby 3.3 (this takes a few minutes)..."
     export PATH="$HOME/.rbenv/bin:$PATH"
     eval "$(rbenv init -)"
-    rbenv install -s 3.3.0
-    rbenv global 3.3.0
+
+    local ruby_ver="3.3.0"
+    local cache_tar="$CACHE_DIR/runtimes/ruby-${ruby_ver}-$(uname -m).tar.gz"
+
+    if cache_available && [ -f "$cache_tar" ]; then
+        info "Restoring Ruby $ruby_ver from cache..."
+        mkdir -p "$HOME/.rbenv/versions"
+        tar -xzf "$cache_tar" -C "$HOME/.rbenv/versions/"
+        rbenv global "$ruby_ver"
+    else
+        info "Installing Ruby 3.3 (this takes a few minutes)..."
+        rbenv install -s "$ruby_ver"
+        rbenv global "$ruby_ver"
+
+        # Cache the compiled version for next time
+        if cache_available; then
+            info "Caching compiled Ruby $ruby_ver..."
+            tar -czf "$cache_tar" -C "$HOME/.rbenv/versions" "$ruby_ver"
+        fi
+    fi
+
     gem install bundler
     mark_done ruby
     ok "Ruby $(ruby --version 2>&1)"
@@ -173,8 +179,10 @@ install_claude_code() {
     if step_done claude-code; then skip "Claude Code"; return 0; fi
     info "Installing Claude Code..."
     export NVM_DIR="$HOME/.nvm"
+    set +u
     # shellcheck source=/dev/null
     [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+    set -u
     npm install -g @anthropic-ai/claude-code
     mark_done claude-code
     ok "Claude Code"
@@ -189,7 +197,6 @@ echo -e "${BLUE}║  vmclaude — Language Runtime Setup           ║${NC}"
 echo -e "${BLUE}╚══════════════════════════════════════════════╝${NC}"
 echo ""
 
-install_pyenv
 install_python
 install_nvm
 install_node
@@ -210,13 +217,11 @@ echo ""
 echo "Installed runtimes:"
 
 # Source everything to show versions
-export PYENV_ROOT="$HOME/.pyenv"
-export PATH="$PYENV_ROOT/bin:$PATH"
-command -v pyenv >/dev/null && eval "$(pyenv init -)"
-
 export NVM_DIR="$HOME/.nvm"
+set +u
 # shellcheck source=/dev/null
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+set -u
 
 [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
 
