@@ -1,0 +1,53 @@
+{
+  "name": "Ruby Development",
+  "image": "mcr.microsoft.com/devcontainers/ruby:3.3",
+  "features": {
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "installZsh": true,
+      "configureZshAsDefaultShell": true,
+      "installOhMyZsh": true
+    },
+    "ghcr.io/devcontainers/features/git:1": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "lts"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "shopify.ruby-lsp",
+        "castwide.solargraph",
+        "misogi.ruby-rubocop",
+        "kaiwood.endwise",
+        "redhat.vscode-yaml"
+      ],
+      "settings": {
+        "[ruby]": {
+          "editor.formatOnSave": true,
+          "editor.defaultFormatter": "shopify.ruby-lsp",
+          "editor.tabSize": 2
+        },
+        "ruby.useBundler": true,
+        "ruby.useLanguageServer": true,
+        "ruby.lint": {
+          "rubocop": {
+            "useBundler": true
+          }
+        },
+        "ruby.format": "rubocop"
+      }
+    }
+  },
+  "postCreateCommand": "if [ -f Gemfile ]; then bundle install; fi",
+  "postStartCommand": "git config --global --add safe.directory ${containerWorkspaceFolder}",
+  "remoteUser": "vscode",
+  "containerEnv": {
+    "BUNDLE_PATH": "/usr/local/bundle",
+    "GEM_HOME": "/usr/local/bundle"
+  },
+  "mounts": [
+    "source=ruby-bundle-cache,target=/usr/local/bundle,type=volume"
+  ]
+}

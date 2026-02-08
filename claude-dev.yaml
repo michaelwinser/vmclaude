@@ -1,0 +1,255 @@
+# Lima VM template for Claude Code development
+# Usage: limactl start claude-dev.yaml
+#        limactl shell claude-dev
+
+# VM Configuration
+vmType: null  # Uses VZ on macOS 13.5+, QEMU otherwise
+arch: null    # Matches host architecture
+
+# Resources
+cpus: 4
+memory: "8GiB"
+disk: "64GiB"
+
+# Ubuntu 24.04 LTS cloud images
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+    arch: "x86_64"
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    arch: "aarch64"
+
+# File sharing - mount home directory read-only, projects writable
+mounts:
+  - location: "~"
+    writable: false
+  - location: "~/projects"
+    writable: true
+  - location: "/tmp/lima"
+    writable: true
+
+# Containerd (for nerdctl) - disable since we're using Docker/Podman
+containerd:
+  system: false
+  user: false
+
+# Port forwarding - common development ports
+portForwards:
+  - guestPortRange: [3000, 3010]
+    hostPortRange: [3000, 3010]
+  - guestPortRange: [4000, 4010]
+    hostPortRange: [4000, 4010]
+  - guestPortRange: [5000, 5010]
+    hostPortRange: [5000, 5010]
+  - guestPortRange: [8000, 8010]
+    hostPortRange: [8000, 8010]
+  - guestPortRange: [8080, 8090]
+    hostPortRange: [8080, 8090]
+
+# Provisioning scripts
+provision:
+  # System-level setup (runs as root)
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+
+      echo "=== Installing Base Developer Tools ==="
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update
+      apt-get install -y \
+        build-essential gcc g++ make cmake autoconf automake libtool pkg-config \
+        git curl wget jq ripgrep fd-find tree htop tmux vim unzip zip \
+        ca-certificates gnupg lsb-release software-properties-common apt-transport-https
+
+      # Symlink fd
+      ln -sf /usr/bin/fdfind /usr/local/bin/fd
+
+      echo "=== Installing Docker ==="
+      install -m 0755 -d /etc/apt/keyrings
+      curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+      chmod a+r /etc/apt/keyrings/docker.gpg
+      echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+      apt-get update
+      apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+      # Add all regular users (UID >= 1000, real shell) to docker group
+      getent passwd | awk -F: '$3 >= 1000 && $7 ~ /(bash|zsh|sh)$/ {print $1}' | while read -r user; do
+        usermod -aG docker "$user" || true
+      done
+      systemctl enable docker
+      systemctl start docker
+
+      echo "=== Installing Podman ==="
+      apt-get install -y podman podman-compose
+      mkdir -p /etc/containers
+      cat > /etc/containers/registries.conf << 'REGEOF'
+      [registries.search]
+      registries = ['docker.io', 'quay.io', 'ghcr.io']
+      REGEOF
+
+      echo "=== Installing Language Build Dependencies ==="
+      apt-get install -y \
+        libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev \
+        libncursesw5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev libffi-dev \
+        liblzma-dev libyaml-dev libncurses5-dev libgdbm-dev
+
+      echo "=== Installing Go ==="
+      GO_VERSION="1.22.0"
+      ARCH=$(dpkg --print-architecture)
+      wget -q "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" -O /tmp/go.tar.gz
+      rm -rf /usr/local/go
+      tar -C /usr/local -xzf /tmp/go.tar.gz
+      rm /tmp/go.tar.gz
+
+  # User-level setup (runs as lima user)
+  - mode: user
+    script: |
+      #!/bin/bash
+      set -ex -o pipefail
+      # Note: not using -u because nvm.sh has unbound variables
+
+      echo "=== Installing pyenv ==="
+      curl -fsSL https://pyenv.run | bash
+      export PYENV_ROOT="$HOME/.pyenv"
+      export PATH="$PYENV_ROOT/bin:$PATH"
+      eval "$(pyenv init -)"
+
+      echo "=== Installing Python 3.12 ==="
+      pyenv install 3.12
+      pyenv global 3.12
+      pip install --upgrade pip
+      pip install pipx
+      pipx ensurepath
+
+      echo "=== Installing nvm ==="
+      curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+      export NVM_DIR="$HOME/.nvm"
+      [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+
+      echo "=== Installing Node.js LTS ==="
+      nvm install --lts
+      nvm use --lts
+      nvm alias default lts/*
+      npm install -g pnpm
+
+      echo "=== Installing Rust ==="
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+      source "$HOME/.cargo/env"
+      rustup default stable
+      rustup component add rustfmt clippy
+
+      echo "=== Installing rbenv ==="
+      git clone https://github.com/rbenv/rbenv.git ~/.rbenv
+      cd ~/.rbenv && src/configure && make -C src && cd ~
+      git clone https://github.com/rbenv/ruby-build.git ~/.rbenv/plugins/ruby-build
+      export PATH="$HOME/.rbenv/bin:$PATH"
+      eval "$(rbenv init -)"
+
+      echo "=== Installing Ruby 3.3 ==="
+      rbenv install 3.3.0
+      rbenv global 3.3.0
+      gem install bundler
+
+      echo "=== Installing Claude Code ==="
+      npm install -g @anthropic-ai/claude-code
+
+      echo "=== Configuring Shell ==="
+      cat >> ~/.bashrc << 'BASHEOF'
+
+      # ============================================
+      # Claude Code Development Environment
+      # ============================================
+
+      # Base tools
+      export PATH="$HOME/.local/bin:$PATH"
+      alias fd='fdfind'
+      alias ll='ls -alF'
+      alias dc='docker compose'
+      alias pc='podman-compose'
+
+      # pyenv
+      export PYENV_ROOT="$HOME/.pyenv"
+      [[ -d $PYENV_ROOT/bin ]] && export PATH="$PYENV_ROOT/bin:$PATH"
+      eval "$(pyenv init -)"
+      eval "$(pyenv virtualenv-init -)"
+
+      # nvm
+      export NVM_DIR="$HOME/.nvm"
+      [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+      [ -s "$NVM_DIR/bash_completion" ] && . "$NVM_DIR/bash_completion"
+
+      # Rust
+      [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+
+      # Go
+      export PATH=$PATH:/usr/local/go/bin
+      export GOPATH=$HOME/go
+      export PATH=$PATH:$GOPATH/bin
+
+      # rbenv
+      export PATH="$HOME/.rbenv/bin:$PATH"
+      eval "$(rbenv init -)"
+
+      # Claude Code
+      alias claude-unsafe='claude --dangerously-skip-permissions'
+      claude-dev() { claude --dangerously-skip-permissions "$@"; }
+      BASHEOF
+
+      mkdir -p ~/go/{bin,src,pkg}
+      mkdir -p ~/projects
+
+      echo "=== Configuring Claude Code ==="
+      mkdir -p ~/.claude
+      cat > ~/.claude/settings.json << 'SETTINGSEOF'
+      {
+        "permissions": {
+          "allow": [
+            "Bash(*)",
+            "Read(*)",
+            "Write(*)",
+            "Edit(*)",
+            "Glob(*)",
+            "Grep(*)",
+            "WebFetch(*)",
+            "WebSearch(*)",
+            "NotebookEdit(*)",
+            "Task(*)"
+          ],
+          "deny": []
+        }
+      }
+      SETTINGSEOF
+
+      echo "=== Creating CLAUDE.md ==="
+      cat > ~/CLAUDE.md << 'CLAUDEMDEOF'
+      # Development Environment Rules
+
+      ## Isolation Requirements (MANDATORY)
+
+      ### Python
+      - **Always use venv**: `python -m venv .venv && source .venv/bin/activate`
+      - Never `pip install` without an active venv
+
+      ### Node.js
+      - Use project-local `node_modules`
+      - Prefer `pnpm` over `npm`
+
+      ### Go
+      - Use Go modules: `go mod init <module-name>`
+
+      ### Rust
+      - Use Cargo: `cargo init` or `cargo new`
+
+      ### Ruby
+      - Use Bundler: `bundle init`
+
+      ## Container-First Development
+      - Use `docker compose` or `podman-compose` for multi-service setups
+      - Build artifacts inside containers for reproducibility
+
+      ## What NOT To Do
+      - Never `pip install` without a venv
+      - Never `npm install -g` for project dependencies
+      - Never install language runtimes globally (use version managers)
+      CLAUDEMDEOF
+
+      echo "=== Setup Complete ==="
